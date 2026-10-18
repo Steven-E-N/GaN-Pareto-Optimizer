@@ -1,7 +1,9 @@
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from pareto import run_pareto
+from pathlib import Path
+from pareto import apply_constraints, run_pareto
 
 # ==========================================
 # 1. PAGE CONFIGURATION
@@ -15,7 +17,35 @@ st.set_page_config(
 )
 
 # ==========================================
-# 2. DASHBOARD STYLING
+# 2. LOAD DESIGN DATA
+# ==========================================
+
+DATA_PATH = Path(__file__).resolve().parent / "data" / "designs.csv"
+
+@st.cache_data
+def load_designs():
+    return pd.read_csv(DATA_PATH)
+
+designs = load_designs()
+
+objective_options = {
+    "Power Loss": "min",
+    "Footprint": "min",
+    "Efficiency": "max",
+    "Cost": "min",
+    "Junction Temperature": "min"
+}
+
+objective_columns = {
+    "Power Loss": "power_loss_w",
+    "Footprint": "footprint_cm2",
+    "Efficiency": "efficiency_percent",
+    "Cost": "cost_usd",
+    "Junction Temperature": "junction_temp_c"
+}
+
+# ==========================================
+# 3. DASHBOARD STYLING
 # ==========================================
 
 st.markdown("""
@@ -81,7 +111,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. SIDEBAR NAVIGATION
+# 4. SIDEBAR NAVIGATION
 # ==========================================
 
 with st.sidebar:
@@ -100,7 +130,7 @@ with st.sidebar:
     st.caption("GaN Pareto Optimization • Prototype")
 
 # ==========================================
-# 4. MAIN DASHBOARD
+# 5. MAIN DASHBOARD
 # ==========================================
 
 st.title("GaN Pareto Optimization")
@@ -113,27 +143,40 @@ st.caption(
 st.divider()
 
 # ==========================================
-# 5. SUMMARY METRIC CARDS
+# 6. SUMMARY METRIC CARDS
 # ==========================================
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.metric("Total Designs", "—")
+    st.metric("Total Designs", len(designs))
 
 with col2:
-    st.metric("Pareto-Optimal", "—")
+    if "pareto_results" in st.session_state:
+        results = st.session_state["pareto_results"]
+        st.metric(
+            "Pareto-Optimal",
+            len(results["pareto_designs"])
+        )
+    else:
+        st.metric("Pareto-Optimal", "—")
 
 with col3:
-    st.metric("Minimum Power Loss", "—")
+    st.metric(
+        "Minimum Power Loss",
+        f"{designs['power_loss_w'].min():.2f} W"
+    )
 
 with col4:
-    st.metric("Best Efficiency", "—")
+    st.metric(
+        "Best Efficiency",
+        f"{designs['efficiency_percent'].max():.2f}%"
+    )
 
 st.write("")
 
 # ==========================================
-# 6. ENGINEERING INPUTS
+# 7. ENGINEERING INPUTS
 # ==========================================
 
 st.markdown("### Design Requirements")
@@ -171,8 +214,13 @@ with st.container(border=True):
             step=10.0
         )
 
+st.caption(
+    "Operating conditions are demonstration inputs. "
+    "They are not yet connected to engineering simulations."
+)
+
 # ==========================================
-# 7. OPTIMIZATION OBJECTIVES
+# 8. OPTIMIZATION OBJECTIVES
 # ==========================================
 
 st.markdown("### Optimization Objectives")
@@ -182,22 +230,19 @@ st.caption(
     "different GaN inverter designs."
 )
 
-objective_options = {
-    "Power Loss": "min",
-    "Footprint": "min",
-    "Efficiency": "max",
-    "Cost": "min",
-    "Junction Temperature": "min"
-}
+def clear_pareto_results():
+    st.session_state.pop("pareto_results", None)
+
 
 selected_objectives = st.multiselect(
     "Select Optimization Objectives",
     options=list(objective_options.keys()),
-    default=["Power Loss", "Footprint"]
+    default=["Power Loss", "Footprint"],
+    on_change=clear_pareto_results
 )
 
 # ==========================================
-# 8. RUN OPTIMIZATION
+# 9. RUN OPTIMIZATION
 # ==========================================
 
 st.divider()
@@ -210,68 +255,93 @@ if st.button(
 
     if len(selected_objectives) < 2:
         st.error(
-            "Please select at least two "
-            "optimization objectives."
+            "Please select at least two optimization objectives."
         )
 
     else:
-        st.success(
-            "Design requirements submitted successfully!"
-        )
+        try:
+            # Apply engineering constraints
+            constrained_designs = apply_constraints(designs)
 
-        st.markdown("### Selected Configuration")
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric("Input Voltage", f"{voltage} V")
-
-        with col2:
-            st.metric("Output Current", f"{current} A")
-
-        with col3:
-            st.metric(
-                "Switching Frequency",
-                f"{frequency} kHz"
+            # Run Pareto optimization
+            results = run_pareto(
+                constrained_designs,
+                selected_objectives,
+                objective_columns,
+                objective_options
             )
 
-        st.write(
-            "**Selected Objectives:**",
-            ", ".join(selected_objectives)
-        )
+            # Store optimization results
+            st.session_state["pareto_results"] = results
 
-        st.info(
-            "The Pareto optimization engine "
-            "will be connected in the next stage."
-        )
+            st.success("Pareto optimization completed!")
 
-
-
+        except ValueError as error:
+            st.session_state.pop("pareto_results", None)
+            st.error(f"Optimization failed: {error}")
 
 # ==========================================
-# 9. DESIGN DATA AND VISUALIZATION
+# 10. OPTIMIZATION RESULTS
 # ==========================================
 
-from pathlib import Path
+if "pareto_results" in st.session_state:
+
+    results = st.session_state["pareto_results"]
+
+    st.markdown("### Optimization Results")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "Pareto-Optimal",
+            len(results["pareto_designs"])
+        )
+
+    with col2:
+        st.metric(
+            "Dominated",
+            len(results["dominated_designs"])
+        )
+
+    with col3:
+        st.metric(
+            "Infeasible",
+            len(results["infeasible_designs"])
+        )
+
+    with col4:
+        st.metric(
+            "Invalid / Excluded",
+            results["excluded_invalid_count"]
+        )
+
+    st.markdown("#### Pareto-Optimal Designs")
+
+    st.dataframe(
+        results["pareto_designs"],
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.caption(
+        "These designs are non-dominated among the feasible "
+        "candidates for the selected objectives."
+    )
+
+# ==========================================
+# 11. DESIGN DATA AND VISUALIZATION
+# ==========================================
 
 st.divider()
+
 st.markdown("### GaN Design Visualization")
-st.caption("Explore candidate inverter designs and compare performance.")
 
-# Load sample design data
-data_path = Path(__file__).resolve().parent / "data" / "designs.csv"
-designs = pd.read_csv(data_path)
+st.caption(
+    "Explore candidate inverter designs and compare performance."
+)
 
-# Connect the frontend objective names to CSV columns
-objective_columns = {
-    "Power Loss": "power_loss_w",
-    "Footprint": "footprint_cm2",
-    "Efficiency": "efficiency_percent",
-    "Cost": "cost_usd",
-    "Junction Temperature": "junction_temp_c"
-}
-
-# Select what to display on each axis
+# Select visualization objectives
 col1, col2 = st.columns(2)
 
 with col1:
@@ -288,12 +358,45 @@ with col2:
         index=0
     )
 
-# Build the interactive scatter plot
-if x_objective == y_objective:
-    st.warning("Please choose two different objectives.")
+# Prepare visualization data
+if "pareto_results" in st.session_state:
+
+    results = st.session_state["pareto_results"]
+
+    # Use the evaluated designs
+    plot_designs = results["all_designs"].copy()
+
+    # Identify dominated designs
+    plot_designs["status"] = "Dominated"
+
+    # Identify Pareto-optimal designs
+    plot_designs.loc[
+        plot_designs["pareto_optimal"], "status"
+    ] = "Pareto-optimal"
+
+    # Identify infeasible designs
+    plot_designs.loc[
+        ~plot_designs["feasible"], "status"
+    ] = "Infeasible"
+
 else:
+    plot_designs = designs.copy()
+    plot_designs["status"] = "Not evaluated"
+
+# ==========================================
+# 12. INTERACTIVE SCATTER PLOT
+# ==========================================
+
+if x_objective == y_objective:
+
+    st.warning(
+        "Please choose two different objectives."
+    )
+
+else:
+
     fig = px.scatter(
-        designs,
+        plot_designs,
         x=objective_columns[x_objective],
         y=objective_columns[y_objective],
         hover_name="design_id",
@@ -302,14 +405,23 @@ else:
             "cost_usd": True,
             "junction_temp_c": True
         },
+        color="status",
+        color_discrete_map={
+            "Pareto-optimal": "#20c7b0",
+            "Dominated": "#64748b",
+            "Infeasible": "#ef4444",
+            "Not evaluated": "#20c7b0"
+        },
         title=f"{y_objective} vs {x_objective}"
     )
 
     fig.update_traces(
         marker=dict(
             size=13,
-            color="#20c7b0",
-            line=dict(width=1, color="#ffffff")
+            line=dict(
+                width=1,
+                color="#ffffff"
+            )
         )
     )
 
@@ -321,16 +433,40 @@ else:
         height=520,
         xaxis_title=x_objective,
         yaxis_title=y_objective,
-        margin=dict(l=30, r=30, t=60, b=30)
+        legend_title_text="Design Classification",
+        margin=dict(
+            l=30,
+            r=30,
+            t=60,
+            b=30
+        )
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
 
-# Display candidate design information
+    if "pareto_results" in st.session_state:
+        st.caption(
+            "Design classifications use all selected optimization "
+            "objectives, which may differ from the two plotted axes."
+        )
+
+# ==========================================
+# 13. DESIGN DATA TABLE
+# ==========================================
+
 with st.expander("View All GaN Designs"):
-    st.dataframe(designs, use_container_width=True, hide_index=True)
+
+    st.dataframe(
+        plot_designs,
+        use_container_width=True,
+        hide_index=True
+    )
 
 st.caption(
-    "Demonstration dataset. The Pareto algorithm "
-    "will identify non-dominated designs after integration."
+    "Demonstration dataset. Pareto-optimal designs "
+    "are identified using the selected optimization "
+    "objectives and engineering constraints."
 )
